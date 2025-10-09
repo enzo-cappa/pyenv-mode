@@ -47,6 +47,14 @@
   "Pyenv installation path."
   (replace-regexp-in-string "\n" "" (shell-command-to-string "pyenv root")))
 
+(defun pyenv-mode-init-environment ()
+  "Initialize pyenv environment in Emacs."
+  (let ((pyenv-root (pyenv-mode-root)))
+    (when pyenv-root
+      (setenv "PYENV_ROOT" pyenv-root)
+      (setenv "PATH" (concat pyenv-root "/shims:" (getenv "PATH")))
+      (setenv "PYENV_VERSION" (replace-regexp-in-string "\n" "" (shell-command-to-string "pyenv version-name"))))))
+
 (defun pyenv-mode-full-path (version)
   "Return full path for VERSION."
   (unless (string= version "system")
@@ -61,13 +69,28 @@
   "Read virtual environment from user input."
   (completing-read "Pyenv: " (pyenv-mode-versions)))
 
+(defun pyenv-mode-find-version (partial-version)
+  "Find the best matching version for PARTIAL-VERSION using pattern matching."
+  (let ((versions (pyenv-mode-versions)))
+    (or
+     ;; First try exact match
+     (car (member partial-version versions))
+     ;; Then try pattern matching for partial versions
+     (car (cl-remove-if-not
+           (lambda (version)
+             (string-match-p (concat "^" (regexp-quote partial-version) "\\.") version))
+           versions))
+     ;; If no match found, return the original version
+     partial-version)))
+
 ;;;###autoload
 (defun pyenv-mode-set (version)
   "Set python shell VERSION."
   (interactive (list (pyenv-mode-read-version)))
-  (pythonic-activate (pyenv-mode-full-path version))
-  (setenv "PYENV_VERSION" version)
-  (force-mode-line-update))
+  (let ((full-version (pyenv-mode-find-version version)))
+    (pythonic-activate (pyenv-mode-full-path full-version))
+    (setenv "PYENV_VERSION" full-version)
+    (force-mode-line-update)))
 
 ;;;###autoload
 (defun pyenv-mode-unset ()
@@ -94,7 +117,9 @@
   :keymap pyenv-mode-map
   (if pyenv-mode
       (if (executable-find "pyenv")
-          (add-to-list 'mode-line-misc-info pyenv-mode-mode-line-format)
+          (progn
+            (pyenv-mode-init-environment)
+            (add-to-list 'mode-line-misc-info pyenv-mode-mode-line-format))
         (error "pyenv-mode: pyenv executable not found."))
     (setq mode-line-misc-info
           (delete pyenv-mode-mode-line-format mode-line-misc-info))))
