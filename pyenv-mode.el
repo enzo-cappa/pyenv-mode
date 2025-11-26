@@ -63,7 +63,8 @@
 (defun pyenv-mode-versions ()
   "List installed python versions."
   (let ((versions (shell-command-to-string "pyenv versions --bare")))
-    (cons "system" (split-string versions))))
+    (cons "system" (mapcar (lambda (v) (string-trim v))
+                           (split-string versions "\n" t)))))
 
 (defun pyenv-mode-read-version ()
   "Read virtual environment from user input."
@@ -71,17 +72,28 @@
 
 (defun pyenv-mode-find-version (partial-version)
   "Find the best matching version for PARTIAL-VERSION using pattern matching."
-  (let ((versions (pyenv-mode-versions)))
+  (let ((versions (pyenv-mode-versions))
+        (trimmed-partial (string-trim partial-version)))
     (or
      ;; First try exact match
-     (car (member partial-version versions))
-     ;; Then try pattern matching for partial versions
+     (car (member trimmed-partial versions))
+     ;; Then try pattern matching for partial versions (e.g., "3.11" matches "3.11.14")
      (car (cl-remove-if-not
            (lambda (version)
-             (string-match-p (concat "^" (regexp-quote partial-version) "\\.") version))
+             (or (string-prefix-p (concat trimmed-partial ".") version)
+                 (string-prefix-p (concat trimmed-partial "-") version)))
            versions))
-     ;; If no match found, return the original version
-     partial-version)))
+     ;; If still no match, try using pyenv's version resolution
+     (let ((resolved (ignore-errors
+                       (string-trim
+                        (shell-command-to-string
+                         (format "pyenv version-name %s" (shell-quote-argument trimmed-partial)))))))
+       (if (and resolved
+                (> (length resolved) 0)
+                (member resolved versions))
+           resolved
+         ;; Last resort: return the original version
+         trimmed-partial)))))
 
 ;;;###autoload
 (defun pyenv-mode-set (version)
