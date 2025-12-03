@@ -43,9 +43,20 @@
   "Return currently active pyenv version."
   (getenv "PYENV_VERSION"))
 
+(defun pyenv-mode-shell-command (command)
+  "Execute COMMAND using /bin/sh without shell initialization.
+Returns the command output as a string, or nil on error."
+  (with-temp-buffer
+    (let ((exit-code (call-process "/bin/sh" nil t nil "-c" command)))
+      (if (zerop exit-code)
+          (buffer-string)
+        nil))))
+
 (defun pyenv-mode-root ()
   "Pyenv installation path."
-  (replace-regexp-in-string "\n" "" (shell-command-to-string "pyenv root")))
+  (let ((output (pyenv-mode-shell-command "pyenv root")))
+    (when output
+      (replace-regexp-in-string "\n" "" output))))
 
 (defun pyenv-mode-init-environment ()
   "Initialize pyenv environment in Emacs."
@@ -53,7 +64,9 @@
     (when pyenv-root
       (setenv "PYENV_ROOT" pyenv-root)
       (setenv "PATH" (concat pyenv-root "/shims:" (getenv "PATH")))
-      (setenv "PYENV_VERSION" (replace-regexp-in-string "\n" "" (shell-command-to-string "pyenv version-name"))))))
+      (let ((version-output (pyenv-mode-shell-command "pyenv version-name")))
+        (when version-output
+          (setenv "PYENV_VERSION" (replace-regexp-in-string "\n" "" version-output)))))))
 
 (defun pyenv-mode-full-path (version)
   "Return full path for VERSION."
@@ -62,7 +75,8 @@
 
 (defun pyenv-mode-versions ()
   "List installed python versions, including partial versions for matching."
-  (let* ((raw-versions (shell-command-to-string "pyenv versions --bare"))
+  (let* ((raw-versions-output (pyenv-mode-shell-command "pyenv versions --bare"))
+         (raw-versions (or raw-versions-output ""))
          (full-versions (cons "system" (mapcar (lambda (v) (string-trim v))
                                                 (split-string raw-versions "\n" t))))
          ;; Generate partial versions (e.g., "3.11" from "3.11.14")
