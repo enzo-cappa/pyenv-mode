@@ -39,6 +39,13 @@
   "How `pyenv-mode' will indicate the current python version in the mode line."
   :group 'pyenv)
 
+(defcustom pyenv-mode-cache-refresh-interval 300
+  "Interval in seconds for automatically clearing pyenv caches.
+Set to nil to disable automatic cache clearing."
+  :type '(choice (integer :tag "Seconds")
+                 (const :tag "Disabled" nil))
+  :group 'pyenv)
+
 (defun pyenv-mode-version ()
   "Return currently active pyenv version."
   (getenv "PYENV_VERSION"))
@@ -52,11 +59,22 @@ Returns the command output as a string, or nil on error."
           (buffer-string)
         nil))))
 
+(defvar pyenv-mode-root-cache nil
+  "Cached pyenv root path to avoid repeated shell command calls.")
+
+(defun pyenv-mode-root-clear-cache ()
+  "Clear the cached pyenv root path."
+  (setq pyenv-mode-root-cache nil))
+
 (defun pyenv-mode-root ()
-  "Pyenv installation path."
-  (let ((output (pyenv-mode-shell-command "pyenv root")))
-    (when output
-      (replace-regexp-in-string "\n" "" output))))
+  "Pyenv installation path.
+Result is cached to avoid repeated shell command calls."
+  (unless pyenv-mode-root-cache
+    (let ((output (pyenv-mode-shell-command "pyenv root")))
+      (when output
+        (setq pyenv-mode-root-cache
+              (replace-regexp-in-string "\n" "" output)))))
+  pyenv-mode-root-cache)
 
 (defun pyenv-mode-init-environment ()
   "Initialize pyenv environment in Emacs."
@@ -73,19 +91,38 @@ Returns the command output as a string, or nil on error."
   (unless (string= version "system")
     (concat (pyenv-mode-root) "/versions/" version)))
 
+(defvar pyenv-mode-versions-cache nil
+  "Cached list of pyenv versions to avoid repeated shell command calls.")
+
+(defvar pyenv-mode-cache-timer nil
+  "Timer object for automatic cache clearing.")
+
+(defun pyenv-mode-versions-clear-cache ()
+  "Clear the cached pyenv versions list."
+  (setq pyenv-mode-versions-cache nil))
+
+(defun pyenv-mode-clear-all-caches ()
+  "Clear both pyenv root and versions caches."
+  (pyenv-mode-root-clear-cache)
+  (pyenv-mode-versions-clear-cache))
+
 (defun pyenv-mode-versions ()
-  "List installed python versions, including partial versions for matching."
-  (let* ((raw-versions-output (pyenv-mode-shell-command "pyenv versions --bare"))
-         (raw-versions (or raw-versions-output ""))
-         (full-versions (cons "system" (mapcar (lambda (v) (string-trim v))
-                                                (split-string raw-versions "\n" t))))
-         ;; Generate partial versions (e.g., "3.11" from "3.11.14")
-         (partial-versions
-          (cl-loop for version in full-versions
-                   when (and (not (string= version "system"))
-                             (string-match "^\\([0-9]+\\.[0-9]+\\)" version))
-                   collect (match-string 1 version))))  ; e.g., "3.11" from "3.11.14"
-    (delete-dups (append full-versions partial-versions))))
+  "List installed python versions, including partial versions for matching.
+Results are cached to avoid repeated shell command calls."
+  (unless pyenv-mode-versions-cache
+    (let* ((raw-versions-output (pyenv-mode-shell-command "pyenv versions --bare"))
+           (raw-versions (or raw-versions-output ""))
+           (full-versions (cons "system" (mapcar (lambda (v) (string-trim v))
+                                                  (split-string raw-versions "\n" t))))
+           ;; Generate partial versions (e.g., "3.11" from "3.11.14")
+           (partial-versions
+            (cl-loop for version in full-versions
+                     when (and (not (string= version "system"))
+                               (string-match "^\\([0-9]+\\.[0-9]+\\)" version))
+                     collect (match-string 1 version))))  ; e.g., "3.11" from "3.11.14"
+      (setq pyenv-mode-versions-cache
+            (delete-dups (append full-versions partial-versions)))))
+  pyenv-mode-versions-cache)
 
 (defun pyenv-mode-read-version ()
   "Read virtual environment from user input."
@@ -124,6 +161,21 @@ Returns the command output as a string, or nil on error."
   (setenv "PYENV_VERSION")
   (force-mode-line-update))
 
+(defun pyenv-mode-start-cache-timer ()
+  "Start the automatic cache clearing timer."
+  (pyenv-mode-stop-cache-timer)
+  (when pyenv-mode-cache-refresh-interval
+    (setq pyenv-mode-cache-timer
+          (run-with-timer pyenv-mode-cache-refresh-interval
+                          pyenv-mode-cache-refresh-interval
+                          'pyenv-mode-clear-all-caches))))
+
+(defun pyenv-mode-stop-cache-timer ()
+  "Stop the automatic cache clearing timer."
+  (when pyenv-mode-cache-timer
+    (cancel-timer pyenv-mode-cache-timer)
+    (setq pyenv-mode-cache-timer nil)))
+
 (defvar pyenv-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-s") 'pyenv-mode-set)
@@ -143,10 +195,13 @@ Returns the command output as a string, or nil on error."
       (if (executable-find "pyenv")
           (progn
             (pyenv-mode-init-environment)
-            (add-to-list 'mode-line-misc-info pyenv-mode-mode-line-format))
+            (add-to-list 'mode-line-misc-info pyenv-mode-mode-line-format)
+            (pyenv-mode-start-cache-timer))
         (error "pyenv-mode: pyenv executable not found."))
-    (setq mode-line-misc-info
-          (delete pyenv-mode-mode-line-format mode-line-misc-info))))
+    (progn
+      (pyenv-mode-stop-cache-timer)
+      (setq mode-line-misc-info
+            (delete pyenv-mode-mode-line-format mode-line-misc-info)))))
 
 (provide 'pyenv-mode)
 
