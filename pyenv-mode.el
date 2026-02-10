@@ -27,6 +27,7 @@
 ;;; Code:
 
 (require 'pythonic)
+(require 'subr-x)
 
 (defgroup pyenv nil
   "Pyenv virtualenv integration with python mode."
@@ -34,8 +35,9 @@
 
 (defcustom pyenv-mode-mode-line-format
   '(:eval
-    (when (pyenv-mode-version)
-      (concat "Pyenv:" (pyenv-mode-version) " ")))
+    (let ((version (pyenv-mode-version)))
+      (when version
+        (concat "Pyenv:" version " "))))
   "How `pyenv-mode' will indicate the current python version in the mode line."
   :group 'pyenv)
 
@@ -51,10 +53,10 @@ Set to nil to disable automatic cache clearing."
   (getenv "PYENV_VERSION"))
 
 (defun pyenv-mode-shell-command (command)
-  "Execute COMMAND using /bin/sh without shell initialization.
+  "Execute COMMAND via the system shell without shell initialization.
 Returns the command output as a string, or nil on error."
   (with-temp-buffer
-    (let ((exit-code (call-process "/bin/sh" nil t nil "-c" command)))
+    (let ((exit-code (call-process shell-file-name nil t nil shell-command-switch command)))
       (if (zerop exit-code)
           (buffer-string)
         nil))))
@@ -72,8 +74,7 @@ Result is cached to avoid repeated shell command calls."
   (unless pyenv-mode-root-cache
     (let ((output (pyenv-mode-shell-command "pyenv root")))
       (when output
-        (setq pyenv-mode-root-cache
-              (replace-regexp-in-string "\n" "" output)))))
+        (setq pyenv-mode-root-cache (string-trim output)))))
   pyenv-mode-root-cache)
 
 (defun pyenv-mode-init-environment ()
@@ -84,12 +85,15 @@ Result is cached to avoid repeated shell command calls."
       (setenv "PATH" (concat pyenv-root "/shims:" (getenv "PATH")))
       (let ((version-output (pyenv-mode-shell-command "pyenv version-name")))
         (when version-output
-          (setenv "PYENV_VERSION" (replace-regexp-in-string "\n" "" version-output)))))))
+          (setenv "PYENV_VERSION" (string-trim version-output)))))))
 
 (defun pyenv-mode-full-path (version)
   "Return full path for VERSION."
   (unless (string= version "system")
-    (concat (pyenv-mode-root) "/versions/" version)))
+    (let ((root (pyenv-mode-root)))
+      (unless root
+        (error "pyenv-mode: pyenv root path is not set"))
+      (concat root "/versions/" version))))
 
 (defvar pyenv-mode-versions-cache nil
   "Cached list of pyenv versions to avoid repeated shell command calls.")
@@ -112,8 +116,7 @@ Results are cached to avoid repeated shell command calls."
   (unless pyenv-mode-versions-cache
     (let* ((raw-versions-output (pyenv-mode-shell-command "pyenv versions --bare"))
            (raw-versions (or raw-versions-output ""))
-           (full-versions (cons "system" (mapcar (lambda (v) (string-trim v))
-                                                  (split-string raw-versions "\n" t))))
+           (full-versions (cons "system" (split-string raw-versions "\n" t "[[:space:]]")))
            ;; Generate partial versions (e.g., "3.11" from "3.11.14")
            (partial-versions
             (cl-loop for version in full-versions
@@ -164,11 +167,12 @@ Results are cached to avoid repeated shell command calls."
 (defun pyenv-mode-start-cache-timer ()
   "Start the automatic cache clearing timer."
   (pyenv-mode-stop-cache-timer)
-  (when pyenv-mode-cache-refresh-interval
-    (setq pyenv-mode-cache-timer
-          (run-with-timer pyenv-mode-cache-refresh-interval
-                          pyenv-mode-cache-refresh-interval
-                          'pyenv-mode-clear-all-caches))))
+  (when (and pyenv-mode-cache-refresh-interval
+             (> pyenv-mode-cache-refresh-interval 0))
+    (let ((interval (max 10 pyenv-mode-cache-refresh-interval)))
+      (setq pyenv-mode-cache-timer
+            (run-with-timer interval interval
+                            'pyenv-mode-clear-all-caches)))))
 
 (defun pyenv-mode-stop-cache-timer ()
   "Stop the automatic cache clearing timer."
@@ -201,7 +205,7 @@ Results are cached to avoid repeated shell command calls."
     (progn
       (pyenv-mode-stop-cache-timer)
       (setq mode-line-misc-info
-            (delete pyenv-mode-mode-line-format mode-line-misc-info)))))
+            (remove pyenv-mode-mode-line-format mode-line-misc-info)))))
 
 (provide 'pyenv-mode)
 
